@@ -97,10 +97,11 @@ void ClientGC::HandleMessage(uint32_t type, const void *data, uint32_t size)
             OnClientHello(messageRead);
             break;
 
-        // Matchmaking messages are owned by the backend: forward them and let it
-        // push updates back (GC2ClientUpdate, reservations).
+        // Matchmaking and rank messages are owned by the backend: forward them and
+        // let it push updates back (GC2ClientUpdate, the populated rank update).
         case k_EMsgGCCStrike15_v2_MatchmakingStart:
         case k_EMsgGCCStrike15_v2_MatchmakingStop:
+        case k_EMsgGCCStrike15_v2_ClientGCRankUpdate:
             ForwardToBackend(messageRead.TypeUnmasked(), messageRead);
             break;
 
