@@ -52,6 +52,9 @@ target_link_libraries(csgo_gc PRIVATE
     cryptopp
     funchook-static
     libprotobuf-lite
+    mbedtls
+    mbedx509
+    mbedcrypto
     steam_api)
 
 # apple message box

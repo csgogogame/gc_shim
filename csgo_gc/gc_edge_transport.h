@@ -43,6 +43,13 @@ private:
     bool WriteFrameBytes(const std::string &frame);
     bool ReadFrameBytes(std::string &frame);
 
+    // Wraps the connected socket in TLS. Enabled by CSGOGC_BACKEND_TLS; verifies
+    // against CSGOGC_BACKEND_CACERT unless CSGOGC_BACKEND_TLS_INSECURE is set.
+    bool TlsHandshake(const std::string &host);
+
     intptr_t m_sock{ -1 };
     bool m_connected{ false };
+
+    struct TlsState; // opaque mbedTLS state, defined in the .cpp
+    TlsState *m_tls{ nullptr };
 };

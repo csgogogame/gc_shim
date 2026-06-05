@@ -3,7 +3,14 @@
 #include "platform.h"
 #include "csgogo/edge.pb.h"
 
+#include <cstdlib>
 #include <cstring>
+
+#include <mbedtls/ssl.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/x509_crt.h>
+#include <mbedtls/net_sockets.h>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -42,7 +49,36 @@ void CloseSocket(socket_t s) { close(s); }
 #endif
 
 constexpr uint32_t kMaxFrameBytes = 4u << 20; // 4 MiB, matches the gateway
+
+// mbedTLS BIO callbacks bridging to our blocking socket (ctx holds the fd).
+int TlsSend(void *ctx, const unsigned char *buf, size_t len)
+{
+    socket_t s = static_cast<socket_t>(reinterpret_cast<intptr_t>(ctx));
+    int n = ::send(s, reinterpret_cast<const char *>(buf), static_cast<int>(len), 0);
+    return (n < 0) ? MBEDTLS_ERR_NET_SEND_FAILED : n;
+}
+
+int TlsRecv(void *ctx, unsigned char *buf, size_t len)
+{
+    socket_t s = static_cast<socket_t>(reinterpret_cast<intptr_t>(ctx));
+    int n = ::recv(s, reinterpret_cast<char *>(buf), static_cast<int>(len), 0);
+    if (n == 0)
+    {
+        return MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY;
+    }
+    return (n < 0) ? MBEDTLS_ERR_NET_RECV_FAILED : n;
+}
 } // namespace
+
+// mbedTLS client state, owned by EdgeTransport while a TLS session is active.
+struct EdgeTransport::TlsState
+{
+    mbedtls_ssl_context ssl;
+    mbedtls_ssl_config conf;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_entropy_context entropy;
+    mbedtls_x509_crt cacert;
+};
 
 EdgeTransport::~EdgeTransport()
 {
@@ -51,6 +87,16 @@ EdgeTransport::~EdgeTransport()
 
 void EdgeTransport::Close()
 {
+    if (m_tls)
+    {
+        mbedtls_ssl_free(&m_tls->ssl);
+        mbedtls_ssl_config_free(&m_tls->conf);
+        mbedtls_ctr_drbg_free(&m_tls->ctr_drbg);
+        mbedtls_entropy_free(&m_tls->entropy);
+        mbedtls_x509_crt_free(&m_tls->cacert);
+        delete m_tls;
+        m_tls = nullptr;
+    }
     if (m_sock != -1)
     {
         CloseSocket(static_cast<socket_t>(m_sock));
@@ -106,6 +152,17 @@ bool EdgeTransport::Connect(const std::string &host, uint16_t port, uint32_t rol
         return false;
     }
     m_sock = static_cast<intptr_t>(s);
+
+    // Optional TLS layer (opt-in via CSGOGC_BACKEND_TLS). All framing below runs
+    // through SendAll/RecvAll, which route over TLS once it's established.
+    if (std::getenv("CSGOGC_BACKEND_TLS"))
+    {
+        if (!TlsHandshake(host))
+        {
+            Close();
+            return false;
+        }
+    }
 
     // Hello handshake.
     edge::EdgeFrame helloFrame;
@@ -208,8 +265,21 @@ bool EdgeTransport::SendAll(const char *data, size_t size)
     size_t sent = 0;
     while (sent < size)
     {
-        int n = send(static_cast<socket_t>(m_sock), data + sent,
-            static_cast<int>(size - sent), 0);
+        int n;
+        if (m_tls)
+        {
+            n = mbedtls_ssl_write(&m_tls->ssl,
+                reinterpret_cast<const unsigned char *>(data) + sent, size - sent);
+            if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE)
+            {
+                continue;
+            }
+        }
+        else
+        {
+            n = send(static_cast<socket_t>(m_sock), data + sent,
+                static_cast<int>(size - sent), 0);
+        }
         if (n <= 0)
         {
             return false;
@@ -224,14 +294,98 @@ bool EdgeTransport::RecvAll(char *data, size_t size)
     size_t got = 0;
     while (got < size)
     {
-        int n = recv(static_cast<socket_t>(m_sock), data + got,
-            static_cast<int>(size - got), 0);
+        int n;
+        if (m_tls)
+        {
+            n = mbedtls_ssl_read(&m_tls->ssl,
+                reinterpret_cast<unsigned char *>(data) + got, size - got);
+            if (n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE)
+            {
+                continue;
+            }
+        }
+        else
+        {
+            n = recv(static_cast<socket_t>(m_sock), data + got,
+                static_cast<int>(size - got), 0);
+        }
         if (n <= 0)
         {
             return false;
         }
         got += static_cast<size_t>(n);
     }
+    return true;
+}
+
+bool EdgeTransport::TlsHandshake(const std::string &host)
+{
+    m_tls = new TlsState();
+    mbedtls_ssl_init(&m_tls->ssl);
+    mbedtls_ssl_config_init(&m_tls->conf);
+    mbedtls_ctr_drbg_init(&m_tls->ctr_drbg);
+    mbedtls_entropy_init(&m_tls->entropy);
+    mbedtls_x509_crt_init(&m_tls->cacert);
+
+    if (mbedtls_ctr_drbg_seed(&m_tls->ctr_drbg, mbedtls_entropy_func,
+            &m_tls->entropy, nullptr, 0) != 0)
+    {
+        Platform::Print("EdgeTransport: TLS RNG seed failed\n");
+        return false;
+    }
+
+    if (mbedtls_ssl_config_defaults(&m_tls->conf, MBEDTLS_SSL_IS_CLIENT,
+            MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT) != 0)
+    {
+        Platform::Print("EdgeTransport: TLS config defaults failed\n");
+        return false;
+    }
+
+    const char *caPath = std::getenv("CSGOGC_BACKEND_CACERT");
+    if (std::getenv("CSGOGC_BACKEND_TLS_INSECURE"))
+    {
+        // Dev only: skip server certificate verification.
+        mbedtls_ssl_conf_authmode(&m_tls->conf, MBEDTLS_SSL_VERIFY_NONE);
+    }
+    else if (caPath)
+    {
+        if (mbedtls_x509_crt_parse_file(&m_tls->cacert, caPath) != 0)
+        {
+            Platform::Print("EdgeTransport: cannot load CA cert %s\n", caPath);
+            return false;
+        }
+        mbedtls_ssl_conf_ca_chain(&m_tls->conf, &m_tls->cacert, nullptr);
+        mbedtls_ssl_conf_authmode(&m_tls->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+    }
+    else
+    {
+        Platform::Print("EdgeTransport: TLS on but no CA cert "
+                        "(set CSGOGC_BACKEND_CACERT or CSGOGC_BACKEND_TLS_INSECURE)\n");
+        return false;
+    }
+
+    mbedtls_ssl_conf_rng(&m_tls->conf, mbedtls_ctr_drbg_random, &m_tls->ctr_drbg);
+
+    if (mbedtls_ssl_setup(&m_tls->ssl, &m_tls->conf) != 0)
+    {
+        Platform::Print("EdgeTransport: TLS setup failed\n");
+        return false;
+    }
+    mbedtls_ssl_set_hostname(&m_tls->ssl, host.c_str());
+    mbedtls_ssl_set_bio(&m_tls->ssl,
+        reinterpret_cast<void *>(static_cast<intptr_t>(m_sock)), TlsSend, TlsRecv, nullptr);
+
+    int ret;
+    while ((ret = mbedtls_ssl_handshake(&m_tls->ssl)) != 0)
+    {
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE)
+        {
+            Platform::Print("EdgeTransport: TLS handshake failed: -0x%04x\n", -ret);
+            return false;
+        }
+    }
+
+    Platform::Print("EdgeTransport: TLS established with %s\n", host.c_str());
     return true;
 }
 

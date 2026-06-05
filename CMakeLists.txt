@@ -108,3 +108,17 @@ FetchContent_Declare(funchook
 	GIT_SHALLOW TRUE)
 
 FetchContent_MakeAvailable(funchook)
+
+#-------------------------------------------------
+# mbedtls (TLS client for the EdgeTransport)
+#-------------------------------------------------
+
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(mbedtls
+	GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls
+	GIT_TAG v3.6.2)
+
+FetchContent_MakeAvailable(mbedtls)
