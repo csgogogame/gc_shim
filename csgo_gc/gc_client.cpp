@@ -276,29 +276,28 @@ void ClientGC::BuildClientWelcome(CMsgClientWelcome &message, const CMsgCStrike1
     message.set_txn_country_code("FI"); // finland
 }
 
-void ClientGC::SendRankUpdate()
+void ClientGC::SendRankUpdate(const CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &mmHello)
 {
+    // Ranks are authored by the backend (the hello), not config.txt. Forward
+    // whatever the backend provided: the per-mode rankings array if present,
+    // otherwise the single competitive ranking.
     CMsgGCCStrike15_v2_ClientGCRankUpdate message;
+    if (mmHello.rankings_size() > 0)
+    {
+        for (const PlayerRankingInfo &rank : mmHello.rankings())
+        {
+            *message.add_rankings() = rank;
+        }
+    }
+    else if (mmHello.has_ranking())
+    {
+        *message.add_rankings() = mmHello.ranking();
+    }
 
-    PlayerRankingInfo *rank = message.add_rankings();
-    rank->set_account_id(AccountId());
-    rank->set_rank_id(GetConfig().CompetitiveRank());
-    rank->set_wins(GetConfig().CompetitiveWins());
-    rank->set_rank_type_id(RankTypeCompetitive);
-
-    rank = message.add_rankings();
-    rank->set_account_id(AccountId());
-    rank->set_rank_id(GetConfig().WingmanRank());
-    rank->set_wins(GetConfig().WingmanWins());
-    rank->set_rank_type_id(RankTypeWingman);
-
-    rank = message.add_rankings();
-    rank->set_account_id(AccountId());
-    rank->set_rank_id(GetConfig().DangerZoneRank());
-    rank->set_wins(GetConfig().DangerZoneWins());
-    rank->set_rank_type_id(RankTypeDangerZone);
-
-    SendMessageToGame(false, k_EMsgGCCStrike15_v2_ClientGCRankUpdate, message);
+    if (message.rankings_size() > 0)
+    {
+        SendMessageToGame(false, k_EMsgGCCStrike15_v2_ClientGCRankUpdate, message);
+    }
 }
 
 void ClientGC::OnClientHello(GCMessageRead &messageRead)
@@ -335,7 +334,7 @@ void ClientGC::OnClientHello(GCMessageRead &messageRead)
     SendMessageToGame(false, k_EMsgGCCStrike15_v2_MatchmakingGC2ClientHello, mmHello);
 
     // send all ranks here as well, it's a bit back and forth with real gc
-    SendRankUpdate();
+    SendRankUpdate(mmHello);
 }
 
 void ClientGC::AdjustItemEquippedState(GCMessageRead &messageRead)

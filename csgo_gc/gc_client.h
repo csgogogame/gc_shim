@@ -46,7 +46,7 @@ private:
     bool FetchMatchmakingHelloFromBackend(CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &message);
     void BuildClientWelcome(CMsgClientWelcome &message, const CMsgCStrike15Welcome &csWelcome,
         const CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &matchmakingHello);
-    void SendRankUpdate();
+    void SendRankUpdate(const CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &mmHello);
 
     uint32_t AccountId() const { return m_steamId & 0xffffffff; }
 
