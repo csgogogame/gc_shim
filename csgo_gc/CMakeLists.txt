@@ -3,6 +3,7 @@ project(csgo_gc)
 add_library(csgo_gc SHARED
     appid.cpp
     case_opening.cpp
+    command_line.cpp
     config.cpp
     gc_client.cpp
     gc_edge_transport.cpp

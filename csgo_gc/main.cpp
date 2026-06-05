@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "platform.h"
 #include "steam_hook.h"
+#include "command_line.h"
 
 #if defined(_MSC_VER)
 #define DLL_EXPORT extern "C" __declspec(dllexport)
@@ -13,5 +14,12 @@
 DLL_EXPORT void InstallGC(bool dedicated)
 {
     Platform::Initialize();
+
+    // Force -steam onto the client engine (dedicated servers don't need it).
+    if (!dedicated)
+    {
+        InstallCommandLineHook();
+    }
+
     SteamHookInstall(dedicated);
 }

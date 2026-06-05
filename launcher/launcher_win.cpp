@@ -172,16 +172,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     InstallGC(false);
 #endif
 
+    // NOTE: -steam is forced via a GetCommandLine hook in csgo_gc.dll (InstallGC,
+    // already called above), because the engine reads the real process command
+    // line, not the lpCmdLine passed here.
 #if defined(DEDICATED)
     return LauncherMain(hInstance, hPrevInstance, lpCmdLine, nShowCmd);
 #else
-    // Launch with -steam by default so the engine runs under Steam (avoids the
-    // VAC error message box). Don't add it twice if the user already passed it.
-    std::string cmdLine = lpCmdLine ? lpCmdLine : "";
-    if (cmdLine.find("-steam") == std::string::npos)
-    {
-        cmdLine = cmdLine.empty() ? "-steam" : "-steam " + cmdLine;
-    }
-    return LauncherMain(true, hInstance, hPrevInstance, cmdLine.data(), nShowCmd);
+    return LauncherMain(true, hInstance, hPrevInstance, lpCmdLine, nShowCmd);
 #endif
 }
