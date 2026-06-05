@@ -114,9 +114,30 @@ int main(int argc, char **argv)
 
 #if defined(DEDICATED)
     InstallGC(true);
+    return LauncherMain(argc, argv);
 #else
     InstallGC(false);
-#endif
 
-    return LauncherMain(argc, argv);
+    // Launch with -steam by default so the engine runs under Steam (avoids the
+    // VAC error). Don't add it twice if the user already passed it.
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "-steam") == 0)
+        {
+            return LauncherMain(argc, argv);
+        }
+    }
+
+    char **newArgv = (char **)malloc((argc + 2) * sizeof(char *));
+    for (int i = 0; i < argc; i++)
+    {
+        newArgv[i] = argv[i];
+    }
+    newArgv[argc] = (char *)"-steam";
+    newArgv[argc + 1] = nullptr;
+
+    int result = LauncherMain(argc + 1, newArgv);
+    free(newArgv);
+    return result;
+#endif
 }

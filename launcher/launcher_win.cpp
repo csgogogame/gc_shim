@@ -175,6 +175,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #if defined(DEDICATED)
     return LauncherMain(hInstance, hPrevInstance, lpCmdLine, nShowCmd);
 #else
-    return LauncherMain(true, hInstance, hPrevInstance, lpCmdLine, nShowCmd);
+    // Launch with -steam by default so the engine runs under Steam (avoids the
+    // VAC error message box). Don't add it twice if the user already passed it.
+    std::string cmdLine = lpCmdLine ? lpCmdLine : "";
+    if (cmdLine.find("-steam") == std::string::npos)
+    {
+        cmdLine = cmdLine.empty() ? "-steam" : "-steam " + cmdLine;
+    }
+    return LauncherMain(true, hInstance, hPrevInstance, cmdLine.data(), nShowCmd);
 #endif
 }
