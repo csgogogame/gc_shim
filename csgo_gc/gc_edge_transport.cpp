@@ -3,6 +3,7 @@
 #include "platform.h"
 #include "csgogo/edge.pb.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 
@@ -87,6 +88,24 @@ EdgeTransport::~EdgeTransport()
 
 void EdgeTransport::Close()
 {
+    m_running = false;
+    m_connected = false;
+
+    // Unblock the receive thread's blocking read, then join it before tearing
+    // down the TLS/socket state it uses.
+    if (m_sock != -1)
+    {
+#if defined(_WIN32)
+        shutdown(static_cast<socket_t>(m_sock), SD_BOTH);
+#else
+        shutdown(static_cast<socket_t>(m_sock), SHUT_RDWR);
+#endif
+    }
+    if (m_recvThread.joinable())
+    {
+        m_recvThread.join();
+    }
+
     if (m_tls)
     {
         mbedtls_ssl_free(&m_tls->ssl);
@@ -102,7 +121,6 @@ void EdgeTransport::Close()
         CloseSocket(static_cast<socket_t>(m_sock));
         m_sock = -1;
     }
-    m_connected = false;
 }
 
 bool EdgeTransport::Connect(const std::string &host, uint16_t port, uint32_t role,
@@ -206,17 +224,16 @@ bool EdgeTransport::Connect(const std::string &host, uint16_t port, uint32_t rol
     m_connected = true;
     Platform::Print("EdgeTransport: connected to %s:%u (session %llu)\n",
         host.c_str(), port, static_cast<unsigned long long>(resp.session_id()));
+
+    // Start the full-duplex receive loop now that the handshake is done.
+    m_running = true;
+    m_recvThread = std::thread(&EdgeTransport::ReceiveLoop, this);
     return true;
 }
 
-bool EdgeTransport::Request(uint32_t msgType, uint64_t jobId, uint64_t steamId,
-    const std::string &payload, uint32_t &outMsgType, std::string &outPayload)
+bool EdgeTransport::SendEnvelope(uint32_t msgType, uint64_t jobId, uint64_t steamId,
+    const std::string &payload)
 {
-    if (!m_connected)
-    {
-        return false;
-    }
-
     edge::EdgeFrame frame;
     edge::EdgeEnvelope *env = frame.mutable_envelope();
     env->set_direction(edge::EDGE_DIRECTION_TO_GC);
@@ -225,39 +242,109 @@ bool EdgeTransport::Request(uint32_t msgType, uint64_t jobId, uint64_t steamId,
     env->set_steam_id(steamId);
     env->set_payload(payload);
 
-    if (!WriteFrameBytes(frame.SerializeAsString()))
+    std::lock_guard<std::mutex> lock(m_sendMutex);
+    return WriteFrameBytes(frame.SerializeAsString());
+}
+
+bool EdgeTransport::Send(uint32_t msgType, uint64_t steamId, const std::string &payload)
+{
+    if (!m_connected)
+    {
+        return false;
+    }
+    return SendEnvelope(msgType, 0 /* unsolicited */, steamId, payload);
+}
+
+bool EdgeTransport::Request(uint32_t msgType, uint64_t steamId, const std::string &payload,
+    uint32_t &outMsgType, std::string &outPayload)
+{
+    if (!m_connected)
     {
         return false;
     }
 
-    // Read frames until we get an envelope reply (skip pongs/keepalives).
-    for (;;)
+    uint64_t jobId = m_nextJobId.fetch_add(1);
+    auto pending = std::make_shared<Pending>();
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        m_pending[jobId] = pending;
+    }
+
+    if (!SendEnvelope(msgType, jobId, steamId, payload))
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        m_pending.erase(jobId);
+        return false;
+    }
+
+    std::unique_lock<std::mutex> lock(m_pendingMutex);
+    bool ok = m_pendingCv.wait_for(lock, std::chrono::seconds(10),
+        [&] { return pending->done; });
+    m_pending.erase(jobId);
+    if (!ok || pending->failed)
+    {
+        return false;
+    }
+    outMsgType = pending->type;
+    outPayload = pending->payload;
+    return true;
+}
+
+void EdgeTransport::ReceiveLoop()
+{
+    while (m_running)
     {
         std::string bytes;
         if (!ReadFrameBytes(bytes))
         {
-            return false;
+            break; // socket closed or error
         }
-        edge::EdgeFrame reply;
-        if (!reply.ParseFromString(bytes))
+        edge::EdgeFrame frame;
+        if (!frame.ParseFromString(bytes))
         {
-            return false;
+            continue;
         }
-        if (reply.has_envelope())
+
+        if (frame.has_envelope())
         {
-            const edge::EdgeEnvelope &re = reply.envelope();
-            outMsgType = re.msg_type();
-            outPayload = re.payload();
-            return true;
+            const edge::EdgeEnvelope &env = frame.envelope();
+            uint64_t jobId = env.job_id();
+            if (jobId != 0)
+            {
+                std::lock_guard<std::mutex> lock(m_pendingMutex);
+                auto it = m_pending.find(jobId);
+                if (it != m_pending.end())
+                {
+                    it->second->type = env.msg_type();
+                    it->second->payload = env.payload();
+                    it->second->done = true;
+                    m_pendingCv.notify_all();
+                    continue;
+                }
+            }
+            // Unsolicited server push: inject into the game.
+            if (m_onPush)
+            {
+                m_onPush(env.msg_type(), env.payload());
+            }
         }
-        if (reply.has_error())
+        else if (frame.has_error())
         {
             Platform::Print("EdgeTransport: backend error %u: %s\n",
-                reply.error().code(), reply.error().message().c_str());
-            return false;
+                frame.error().code(), frame.error().message().c_str());
         }
-        // ping/pong or anything else: keep reading.
+        // pong / anything else: ignore
     }
+
+    // Connection ended: fail any in-flight requests so callers don't hang.
+    m_connected = false;
+    std::lock_guard<std::mutex> lock(m_pendingMutex);
+    for (auto &kv : m_pending)
+    {
+        kv.second->failed = true;
+        kv.second->done = true;
+    }
+    m_pendingCv.notify_all();
 }
 
 bool EdgeTransport::SendAll(const char *data, size_t size)

@@ -16,6 +16,13 @@ public:
     uint32_t TypeMasked() const { return m_type; }
     uint64_t JobId() const { return m_jobId; }
 
+    // The unread bytes after the header (the bare protobuf body), for forwarding
+    // a message to the backend without re-parsing it.
+    std::string_view Remaining() const
+    {
+        return { reinterpret_cast<const char *>(m_data + m_offset), m_size - m_offset };
+    }
+
     template<typename T>
     bool ReadProtobuf(T &message)
     {
@@ -67,6 +74,10 @@ class GCMessageWrite
 public:
     // protobuf messages
     GCMessageWrite(uint32_t type, const google::protobuf::MessageLite &message, uint64_t jobId = JobIdInvalid);
+
+    // protobuf message from an already-serialized body (used to inject backend
+    // pushes whose bytes we received over the wire)
+    GCMessageWrite(uint32_t type, const void *protobufBody, uint32_t bodySize, uint64_t jobId);
 
     // non protobuf messages, data written with the writer functions
     GCMessageWrite(uint32_t type);

@@ -144,6 +144,26 @@ GCMessageWrite::GCMessageWrite(uint32_t type, const google::protobuf::MessageLit
     AppendProtobuf(m_buffer, message);
 }
 
+GCMessageWrite::GCMessageWrite(uint32_t type, const void *protobufBody, uint32_t bodySize, uint64_t jobId)
+{
+    // mirrors the MessageLite constructor but appends an already-serialized body
+    WriteUint32(type | ProtobufMask);
+
+    if (jobId != JobIdInvalid)
+    {
+        CMsgProtoBufHeader header;
+        header.set_job_id_target(jobId);
+        WriteUint32(header.ByteSizeLong());
+        AppendProtobuf(m_buffer, header);
+    }
+    else
+    {
+        WriteUint32(0);
+    }
+
+    WriteData(protobufBody, bodySize);
+}
+
 GCMessageWrite::GCMessageWrite(uint32_t type)
 {
     // write the non protobuf messge hader

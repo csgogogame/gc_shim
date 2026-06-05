@@ -23,6 +23,11 @@ private:
     void SendMessageToGame(bool sendToGameServer, uint32_t type,
         const google::protobuf::MessageLite &message, uint64_t jobId = JobIdInvalid);
 
+    // forward a client matchmaking GC message to the backend (bare protobuf body)
+    void ForwardToBackend(uint32_t msgType, GCMessageRead &messageRead);
+    // inject a backend-pushed GC message into the game (runs on the recv thread)
+    void InjectFromBackend(uint32_t msgType, const std::string &body);
+
     void OnClientHello(GCMessageRead &messageRead);
     void AdjustItemEquippedState(GCMessageRead &messageRead);
     void ClientPlayerDecalSign(GCMessageRead &messageRead);

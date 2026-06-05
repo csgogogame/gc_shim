@@ -42,6 +42,11 @@ ClientGC::ClientGC(uint64_t steamId)
     // also called from ServerGC's constructor
     Graffiti::Initialize();
 
+    // Backend pushes (queue updates, reservations) are injected into the game.
+    m_edge.SetPushHandler([this](uint32_t msgType, const std::string &body) {
+        InjectFromBackend(msgType, body);
+    });
+
     StartThread();
 
     Platform::Print("ClientGC spawned for user %llu\n", steamId);
@@ -90,6 +95,13 @@ void ClientGC::HandleMessage(uint32_t type, const void *data, uint32_t size)
         {
         case k_EMsgGCClientHello:
             OnClientHello(messageRead);
+            break;
+
+        // Matchmaking messages are owned by the backend: forward them and let it
+        // push updates back (GC2ClientUpdate, reservations).
+        case k_EMsgGCCStrike15_v2_MatchmakingStart:
+        case k_EMsgGCCStrike15_v2_MatchmakingStop:
+            ForwardToBackend(messageRead.TypeUnmasked(), messageRead);
             break;
 
         case k_EMsgGCAdjustItemEquippedState:
@@ -212,6 +224,24 @@ void ClientGC::SendMessageToGame(bool sendToGameServer, uint32_t type,
     PostToHost(HostEvent::Message, messageWrite.TypeMasked(), messageWrite.Data(), messageWrite.Size());
 }
 
+void ClientGC::ForwardToBackend(uint32_t msgType, GCMessageRead &messageRead)
+{
+    if (!m_edge.Connected())
+    {
+        Platform::Print("EdgeTransport: not connected, dropping msg %u\n", msgType);
+        return;
+    }
+    std::string_view body = messageRead.Remaining();
+    m_edge.Send(msgType, m_steamId, std::string(body));
+}
+
+void ClientGC::InjectFromBackend(uint32_t msgType, const std::string &body)
+{
+    // Runs on the EdgeTransport receive thread; PostToHost is thread-safe.
+    GCMessageWrite messageWrite{ msgType, body.data(), static_cast<uint32_t>(body.size()), JobIdInvalid };
+    PostToHost(HostEvent::Message, messageWrite.TypeMasked(), messageWrite.Data(), messageWrite.Size());
+}
+
 constexpr uint32_t MakeAddress(uint32_t v1, uint32_t v2, uint32_t v3, uint32_t v4)
 {
     return v4 | (v3 << 8) | (v2 << 16) | (v1 << 24);
@@ -247,7 +277,7 @@ bool ClientGC::FetchMatchmakingHelloFromBackend(CMsgGCCStrike15_v2_MatchmakingGC
 
     uint32_t replyType = 0;
     std::string replyPayload;
-    if (!m_edge.Request(k_EMsgGCCStrike15_v2_MatchmakingClient2GCHello, 0, m_steamId,
+    if (!m_edge.Request(k_EMsgGCCStrike15_v2_MatchmakingClient2GCHello, m_steamId,
             request.SerializeAsString(), replyType, replyPayload))
     {
         return false;
