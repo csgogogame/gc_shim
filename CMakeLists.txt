@@ -39,6 +39,12 @@ endif()
 if (MSVC)
     # statically linked crt
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # Newer MSVC STLs (VS 2022 17.10+/VS 2026) REMOVED stdext::make_*_array_iterator,
+    # which Crypto++ still calls. Force-include a compat shim that reintroduces them
+    # (and keep the silence macro for any remaining deprecation paths).
+    add_compile_definitions(_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING)
+    # C++ only — distorm (a C library) must not get the C++ compat header.
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/FI${CMAKE_CURRENT_SOURCE_DIR}/cmake/stdext_compat.h>")
 else()
     add_compile_options(-fpic -fvisibility=hidden)
 

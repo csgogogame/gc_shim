@@ -1,2 +1,5 @@
 /*build*/
 /.idea
+
+# Generated C++ from the gc_contracts submodule (buf). Regenerated, not committed.
+/gen/

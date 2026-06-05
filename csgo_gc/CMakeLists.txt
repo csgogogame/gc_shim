@@ -5,6 +5,7 @@ add_library(csgo_gc SHARED
     case_opening.cpp
     config.cpp
     gc_client.cpp
+    gc_edge_transport.cpp
     gc_message.cpp
     gc_server.cpp
     gc_shared.cpp
@@ -38,6 +39,13 @@ file(GLOB PROTOBUFS ../protobufs/*.cc)
 target_include_directories(csgo_gc PRIVATE ../protobufs)
 target_sources(csgo_gc PRIVATE ${PROTOBUFS})
 source_group("Protobufs" FILES ${PROTOBUFS})
+
+# Our own EdgeTransport contracts, generated from gc_contracts via buf (csgogo
+# protos only; the Valve protos above are reused). Run `buf generate` first.
+file(GLOB EDGE_PROTOS ../gen/csgogo/*.cc)
+target_include_directories(csgo_gc PRIVATE ../gen)
+target_sources(csgo_gc PRIVATE ${EDGE_PROTOS})
+source_group("EdgeProtos" FILES ${EDGE_PROTOS})
 
 target_link_libraries(csgo_gc PRIVATE
     cryptopp

@@ -3,6 +3,8 @@
 #include "graffiti.h"
 #include "keyvalue.h"
 
+#include <cstdlib>
+
 ClientGC::ClientGC(uint64_t steamId)
     : m_steamId{ steamId }
     , m_inventory{ steamId }
@@ -195,36 +197,36 @@ static void BuildCSWelcome(CMsgCStrike15Welcome &message)
     message.set_last_ip_address(MakeAddress(127, 0, 0, 1));
 }
 
-void ClientGC::BuildMatchmakingHello(CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &message)
+bool ClientGC::FetchMatchmakingHelloFromBackend(CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &message)
 {
-    message.set_account_id(AccountId());
+    if (!m_edge.Connected())
+    {
+        const char *host = std::getenv("CSGOGC_BACKEND_HOST");
+        const char *portStr = std::getenv("CSGOGC_BACKEND_PORT");
+        uint16_t port = portStr ? static_cast<uint16_t>(std::atoi(portStr)) : 9510;
+        if (!m_edge.Connect(host ? host : "127.0.0.1", port,
+                1 /* EDGE_ROLE_CLIENT */, m_steamId, {}))
+        {
+            return false;
+        }
+    }
 
-    // this is the state of csgo matchmaking in 2024
-    message.mutable_global_stats()->set_players_online(0);
-    message.mutable_global_stats()->set_servers_online(0);
-    message.mutable_global_stats()->set_players_searching(0);
-    message.mutable_global_stats()->set_servers_available(0);
-    message.mutable_global_stats()->set_ongoing_matches(0);
-    message.mutable_global_stats()->set_search_time_avg(0);
+    // Phase 1: an empty Client2GCHello is enough; the backend authors the reply.
+    CMsgGCCStrike15_v2_MatchmakingClient2GCHello request;
 
-    // don't write search_statistics
-
-    message.mutable_global_stats()->set_main_post_url("");
-
-    // bullshit
-    message.mutable_global_stats()->set_required_appid_version(13857);
-    message.mutable_global_stats()->set_pricesheet_version(1680057676); // mikkotodo revisit
-    message.mutable_global_stats()->set_twitch_streams_version(2);
-    message.mutable_global_stats()->set_active_tournament_eventid(20);
-    message.mutable_global_stats()->set_active_survey_id(0);
-    message.mutable_global_stats()->set_required_appid_version2(13862); // csgo s2
-
-    message.set_vac_banned(GetConfig().VacBanned());
-    message.mutable_commendation()->set_cmd_friendly(GetConfig().CommendedFriendly());
-    message.mutable_commendation()->set_cmd_teaching(GetConfig().CommendedTeaching());
-    message.mutable_commendation()->set_cmd_leader(GetConfig().CommendedLeader());
-    message.set_player_level(GetConfig().Level());
-    message.set_player_cur_xp(GetConfig().Xp());
+    uint32_t replyType = 0;
+    std::string replyPayload;
+    if (!m_edge.Request(k_EMsgGCCStrike15_v2_MatchmakingClient2GCHello, 0, m_steamId,
+            request.SerializeAsString(), replyType, replyPayload))
+    {
+        return false;
+    }
+    if (replyType != k_EMsgGCCStrike15_v2_MatchmakingGC2ClientHello)
+    {
+        Platform::Print("EdgeTransport: unexpected hello reply type %u\n", replyType);
+        return false;
+    }
+    return message.ParseFromString(replyPayload);
 }
 
 void ClientGC::BuildClientWelcome(CMsgClientWelcome &message, const CMsgCStrike15Welcome &csWelcome,
@@ -281,8 +283,15 @@ void ClientGC::OnClientHello(GCMessageRead &messageRead)
     CMsgCStrike15Welcome csWelcome;
     BuildCSWelcome(csWelcome);
 
+    // The matchmaking hello (rank, profile) is authored by the backend. The shim
+    // does not synthesize it locally; if the backend is unreachable the hello
+    // cannot be completed.
     CMsgGCCStrike15_v2_MatchmakingGC2ClientHello mmHello;
-    BuildMatchmakingHello(mmHello);
+    if (!FetchMatchmakingHelloFromBackend(mmHello))
+    {
+        Platform::Print("EdgeTransport: backend unavailable, cannot complete client hello\n");
+        return;
+    }
 
     CMsgClientWelcome clientWelcome;
     BuildClientWelcome(clientWelcome, csWelcome, mmHello);

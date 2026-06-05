@@ -3,6 +3,7 @@
 #include "config.h"
 #include "gc_shared.h"
 #include "inventory.h"
+#include "gc_edge_transport.h"
 
 class ClientGC final : public SharedGC
 {
@@ -40,7 +41,9 @@ private:
     void NameBaseItem(GCMessageRead &messageRead);
     void RemoveItemName(GCMessageRead &messageRead);
 
-    void BuildMatchmakingHello(CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &message);
+    // Fetch the matchmaking hello (rank, profile) from the gamecoordinator
+    // backend over the EdgeTransport. The shim does not author it locally.
+    bool FetchMatchmakingHelloFromBackend(CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &message);
     void BuildClientWelcome(CMsgClientWelcome &message, const CMsgCStrike15Welcome &csWelcome,
         const CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &matchmakingHello);
     void SendRankUpdate();
@@ -50,6 +53,9 @@ private:
     const uint64_t m_steamId;
 
     Inventory m_inventory;
+
+    // EdgeTransport link to the gamecoordinator backend (Phase 1: matchmaking hello).
+    EdgeTransport m_edge;
 
     // microtransactions, we only have one going at a time
     uint64_t m_transactionId{};
