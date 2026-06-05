@@ -5,6 +5,36 @@
 
 #include <cstdlib>
 
+// Forward-declared so isteamuser.h's GetAuthSessionTicket signature parses
+// (steam_hook.cpp does the same before pulling in the Steam headers).
+struct SteamNetworkingIdentity;
+#include <steam/steam_api.h>
+
+// Mint a Steam auth session ticket for the local user. The backend's steam-auth
+// sidecar validates it via ISteamGameServer::BeginAuthSession, yielding the real
+// steamID + ownership + VAC status (keyless). Returns empty on failure, in which
+// case the gateway falls back to trusting the asserted steamID.
+static std::vector<uint8_t> AcquireAuthTicket()
+{
+    std::vector<uint8_t> ticket;
+    ISteamUser *user = SteamUser();
+    if (!user)
+    {
+        Platform::Print("EdgeTransport: SteamUser() unavailable, sending no ticket\n");
+        return ticket;
+    }
+    uint8_t buffer[2048];
+    uint32 length = 0;
+    HAuthTicket handle = user->GetAuthSessionTicket(buffer, sizeof(buffer), &length, nullptr);
+    if (handle == k_HAuthTicketInvalid || length == 0)
+    {
+        Platform::Print("EdgeTransport: GetAuthSessionTicket failed\n");
+        return ticket;
+    }
+    ticket.assign(buffer, buffer + length);
+    return ticket;
+}
+
 ClientGC::ClientGC(uint64_t steamId)
     : m_steamId{ steamId }
     , m_inventory{ steamId }
@@ -204,8 +234,9 @@ bool ClientGC::FetchMatchmakingHelloFromBackend(CMsgGCCStrike15_v2_MatchmakingGC
         const char *host = std::getenv("CSGOGC_BACKEND_HOST");
         const char *portStr = std::getenv("CSGOGC_BACKEND_PORT");
         uint16_t port = portStr ? static_cast<uint16_t>(std::atoi(portStr)) : 9510;
+        std::vector<uint8_t> ticket = AcquireAuthTicket();
         if (!m_edge.Connect(host ? host : "127.0.0.1", port,
-                1 /* EDGE_ROLE_CLIENT */, m_steamId, {}))
+                1 /* EDGE_ROLE_CLIENT */, m_steamId, ticket))
         {
             return false;
         }
