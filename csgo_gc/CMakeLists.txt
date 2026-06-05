@@ -59,8 +59,10 @@ if (APPLE)
 endif()
 
 if (OUTDIR)
+    # Install next to the game's launcher.dll in bin/, where the launcher now
+    # looks for it (see launcher/launcher_*.cpp).
     add_custom_command(TARGET csgo_gc POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy
         $<TARGET_FILE:csgo_gc>
-        ${OUTDIR}/csgo_gc/${GC_LIB_DIR}/$<TARGET_FILE_NAME:csgo_gc>)
+        ${OUTDIR}/bin/${GC_LIB_DIR}/$<TARGET_FILE_NAME:csgo_gc>)
 endif()

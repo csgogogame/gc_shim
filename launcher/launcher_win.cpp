@@ -154,7 +154,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 1;
     }
 
-    _snwprintf_s(modulePath, std::size(modulePath), L"%ls\\csgo_gc\\" GC_LIB_DIR "\\"
+    // csgo_gc.dll lives in the game's bin dir alongside launcher.dll (already on
+    // PATH above), so its dependencies (e.g. steam_api.dll) resolve there too.
+    _snwprintf_s(modulePath, std::size(modulePath), L"%ls\\bin\\" GC_LIB_DIR "\\"
                                                     "csgo_gc" GC_LIB_EXTENSION,
         baseDir);
     InstallGC_t InstallGC = (InstallGC_t)LoadModuleAndFindSymbol(modulePath, "InstallGC");
